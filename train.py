@@ -1,25 +1,40 @@
 import numpy as np
-import csv
-import math
-# from tensorboardX import SummaryWriter
 import warnings
 
 warnings.filterwarnings('ignore')
-from PIL import Image
 
 import torch
-import torch.nn as nn
-import torchvision.transforms as transforms
+
 import os
-from torchvision.transforms import ToTensor
 from torch.utils.data import DataLoader
 from Networks.DAANet import DAA
 from EMA import EMA
 from datasets.data_utils import DataSetFactory
-import cv2
 import constants as C
 from tqdm import tqdm
 import wandb
+
+
+def _smooth_l1_loss(input, target, weight=1., reduce=True):
+    t = torch.abs(input - target)
+    ret = torch.where(t < 1, 0.5 * t ** 2, t - 0.5)
+    loss = ret * weight
+    if reduce:
+        return torch.mean(loss)
+    else:
+        return loss
+
+
+def run_loss(ages, labels, accuracy_threshold):
+    loss = {}
+    loss['smooth_l1_loss'] = _smooth_l1_loss(ages, labels.float())
+
+    age_diff = torch.abs(ages - labels.float())
+    loss['l1_loss'] = torch.mean(age_diff)
+
+    loss['accuracy'] = 100 * (age_diff <= accuracy_threshold).float().sum() / labels.size(0)
+    loss[C.TOTAL_LOSS] = loss['smooth_l1_loss']
+    return loss
 
 
 class AverageMeter(object):
@@ -86,7 +101,6 @@ class DAATrainer(object):
                                        num_workers=self.config.num_works, drop_last=True)
         self.val_loader = DataLoader(factory.testing, batch_size=self.batch_size, shuffle=True,
                                      num_workers=self.config.num_works // 2, drop_last=True)
-        self.val_iter = iter(self.val_loader)
 
         if self.config.da_type == 'image_template':
             self.template_images = factory.template_images.to(self.device).float()
@@ -185,17 +199,26 @@ class DAATrainer(object):
         for key, value in labels.items():
             labels[key] = value.to(self.device)
 
-        run_info = {}
+        run_info = {C.LABELS: labels['gt_age'],
+                    'mode': mode,
+                    'accuracy_threshold': self.config.accuracy_threshold}
 
-        run_info['labels'] = labels['gt_age']
-        run_info['mode'] = mode
-        run_info['accuracy_threshold'] = self.config.accuracy_threshold
         if self.config.da_type == 'image_template':
             run_info['template_images'] = self.template_images
             run_info['template_labels'] = self.template_labels
 
-        outputs = self.model(images, run_info)
-        return outputs
+        ages = self.model(images, run_info)
+
+        results = {}
+        results['age'] = ages
+
+        if run_info['mode'].lower() != 'test':
+            loss = run_loss(ages.view(-1), run_info[C.LABELS].view(-1), run_info['accuracy_threshold'])
+            results[C.LOSS] = loss
+        else:
+            results['l1'] = torch.abs(ages - run_info[C.LABELS].view(-1).float()).mean()
+
+        return results
 
     def train_epoch(self, epoch):
         self.model.train()
@@ -226,7 +249,7 @@ class DAATrainer(object):
         self.ema.apply_shadow()
         for x_val, y_val in tqdm(self.val_loader):
             with torch.no_grad():
-                val_outputs = self.run(x_val, y_val, 'val')
+                val_outputs = self.run(x_val, y_val, C.VAL)
                 self.val_losses.update(val_outputs['loss']['l1_loss'].detach().item(), x_val.shape[0])
         self.ema.restore()
         self.model.train()
@@ -249,7 +272,6 @@ class DAATrainer(object):
         for n, (x_val, y_val) in enumerate(self.val_loader):
             output = self.run(x_val, y_val, 'test')
             diff = output['l1'].detach().cpu().item()
-            # print(diff<=3)
 
             for c in range(len(acc)):
                 acc[c] = acc[c] + (1. if diff <= acc_th[c] else 0.)

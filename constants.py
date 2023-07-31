@@ -1,5 +1,7 @@
 SCORE = "score"
 LOSS = "loss"
 TOTAL_LOSS = "total_loss"
+LABELS = "labels"
 TRAIN = "train"
+VAL = "val"
 PROJECT_NAME = "AgeEstimation"

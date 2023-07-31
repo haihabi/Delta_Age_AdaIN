@@ -3,11 +3,9 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-import importlib
 from Networks.C3AENet import C3AE
 from Networks.ResNets import ResnetEncoder
 from Networks.DeltaAdaINNet import DeltaAdaIN
-from torch.autograd import Variable
 
 
 def activate_fn(x, inplace=True):
@@ -74,27 +72,6 @@ class DAA(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def _smooth_l1_loss(self, input, target, weight=1., reduce=True):
-        t = torch.abs(input - target)
-        ret = torch.where(t < 1, 0.5 * t ** 2, t - 0.5)
-        loss = ret * weight
-        if reduce:
-            return torch.mean(loss)
-        else:
-            return loss
-
-    def run_loss(self, ages, labels, accuracy_threshold):
-
-        loss = {}
-        loss['smooth_l1_loss'] = self._smooth_l1_loss(ages, labels.float())
-
-        age_diff = torch.abs(ages - labels.float())
-        loss['l1_loss'] = torch.mean(age_diff)
-
-        loss['accuracy'] = 100 * (age_diff <= accuracy_threshold).float().sum() / labels.size(0)
-        loss['total_loss'] = loss['smooth_l1_loss']
-        return loss
-
     def forward(self, x, run_info):
         x = self.face_encoder(x)
 
@@ -109,16 +86,7 @@ class DAA(nn.Module):
         delta_ages = self.age_decoder(da_feats.view(b1 * b2, c, h, w)).view(b1, b2)
 
         ages = torch.mean(template_labels - delta_ages, -1)
-        results = {}
-        results['age'] = ages
-
-        if run_info['mode'].lower() != 'test':
-            loss = self.run_loss(ages.view(-1), run_info['labels'].view(-1), run_info['accuracy_threshold'])
-            results['loss'] = loss
-        else:
-            results['l1'] = torch.abs(ages - run_info['labels'].view(-1).float()).mean()
-
-        return results
+        return ages
 
 
 if __name__ == '__main__':
