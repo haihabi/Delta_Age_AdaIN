@@ -1,0 +1,5 @@
+SCORE = "score"
+LOSS = "loss"
+TOTAL_LOSS = "total_loss"
+TRAIN = "train"
+PROJECT_NAME = "AgeEstimation"
